@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import random
 from pyrogram import Client, filters
 from pyrogram.types import Message, BotCommand
 from pyrogram.raw.functions.contacts import ResolveUsername
@@ -106,84 +107,65 @@ def generate_usernames(category: str, base: str) -> list:
     
     valid_usns = []
     for u in set(variations):
-        # Username Telegram wajib minimal 5 karakter
         if len(u) >= 5 and re.match(r"^[a-zA-Z0-9_]+$", u):
             valid_usns.append(u)
             
     return valid_usns
 
 # ----------------------------------------------------
-# Fast Username Check Function
-# ----------------------------------------------------
-async def check_single_username(checker_client: Client, usn: str, code: str, user_id: int, message: Message, keeper_client: Client):
-    try:
-        # Pengecekan cepat tingkat low-level API
-        await checker_client.invoke(ResolveUsername(username=usn))
-        # Jika berhasil di-resolve, berarti username terpakai/occupied
-        return False
-    except UsernameNotOccupied:
-        # Username TIDAK terpakai = AVAILABLE!
-        await message.reply_text(f"🎯 **USERNAME AVAILABLE:** @{usn}")
-        if keeper_client:
-            try:
-                await keeper_client.set_username(usn)
-                await message.reply_text(f"🔥 **SUCCESSFULLY CLAIMED:** @{usn} via Keeper!")
-            except RPCError as claim_err:
-                await message.reply_text(f"⚠️ Gagal claim @{usn}: {claim_err}")
-        return True
-    except UsernameInvalid:
-        return False
-    except FloodWait as e:
-        checkers[user_id][code]["active"] = False
-        await message.reply_text(f"⚠️ Akun Checker kode **{code}** kena limit Telegram! Istirahat **{e.value}** detik.")
-        return False
-    except Exception:
-        return False
-
-# ----------------------------------------------------
-# Parallel Worker Loop
+# Safe Worker Loop dengan Rotasi Akun Real-time
 # ----------------------------------------------------
 async def run_checker_loop(user_id: int, message: Message, targets: list, mode: str):
     keeper_client = keepers.get(user_id)
+    current_idx = 0
     
     while user_states.get(user_id, {}).get("active", False):
-        active_checkers = [
-            (code, acc["client"]) 
-            for code, acc in checkers.get(user_id, {}).items() 
-            if acc["active"]
-        ]
-
-        if not active_checkers:
-            await message.reply_text("⚠️ Semua akun checker sedang tidak aktif atau kena limit.")
-            break
-
-        # Jalankan secara paralel per-batch 5 request sekaligus
-        batch_size = 5
-        for i in range(0, len(targets), batch_size):
+        for usn in targets:
             if not user_states.get(user_id, {}).get("active", False):
                 break
 
+            # Dapatkan daftar akun checker yang SEDANG AKTIF saja
             active_checkers = [
                 (code, acc["client"]) 
                 for code, acc in checkers.get(user_id, {}).items() 
                 if acc["active"]
             ]
+
             if not active_checkers:
+                await message.reply_text("⚠️ Semua akun checker sedang di-pause atau kena limit Telegram!")
+                user_states[user_id]["active"] = False
                 break
 
-            batch = targets[i:i + batch_size]
-            tasks = []
+            # Rotasi ke akun checker berikutnya (Round Robin)
+            code, current_checker = active_checkers[current_idx % len(active_checkers)]
+            current_idx += 1
 
-            for idx, usn in enumerate(batch):
-                code, current_checker = active_checkers[idx % len(active_checkers)]
-                tasks.append(
-                    check_single_username(
-                        current_checker, usn, code, user_id, message, keeper_client
-                    )
+            try:
+                # MTProto resolve peer check
+                await current_checker.invoke(ResolveUsername(username=usn))
+            except UsernameNotOccupied:
+                # Username AVAILABLE!
+                await message.reply_text(f"🎯 **USERNAME AVAILABLE:** @{usn}")
+                if keeper_client:
+                    try:
+                        await keeper_client.set_username(usn)
+                        await message.reply_text(f"🔥 **SUCCESSFULLY CLAIMED:** @{usn} via Keeper!")
+                    except RPCError as claim_err:
+                        await message.reply_text(f"⚠️ Gagal claim @{usn}: {claim_err}")
+            except UsernameInvalid:
+                pass
+            except FloodWait as e:
+                # Pause otomatis akun yang terkena limit agar tidak mengirim log berulang
+                checkers[user_id][code]["active"] = False
+                await message.reply_text(
+                    f"⚠️ Akun Checker kode **{code}** kena limit Telegram! Istirahat **{e.value}** detik.\n"
+                    f"🔄 Otomatis mengalihkan ke akun checker lain yang tersedia..."
                 )
+            except Exception:
+                pass
 
-            await asyncio.gather(*tasks)
-            await asyncio.sleep(0.2) # Jeda singkat antar batch agar aman dari instant ban
+            # Delay acak cepat untuk mencegah rate limit dadakan
+            await asyncio.sleep(random.uniform(1.2, 2.5))
 
         if mode == "1":
             break
@@ -192,7 +174,7 @@ async def run_checker_loop(user_id: int, message: Message, targets: list, mode: 
     await message.reply_text("🏁 **Pengecekan Selesai.**")
 
 # ----------------------------------------------------
-# Handlers Command & Input
+# Handlers Command Utama
 # ----------------------------------------------------
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
@@ -215,7 +197,7 @@ async def login_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 2:
-        await message.reply_text("❌ Format salah! Gunakan: `/login [kode]`")
+        await message.reply_text("❌ Format salah! Gunakan: `/login [kode]`\nContoh: `/login 1` atau `/login 2`")
         return
     code = args[1]
     user_states[user_id] = {"step": "LOGIN_PHONE", "type": "checker", "code": code}
@@ -249,7 +231,7 @@ async def active_cmd(client: Client, message: Message):
     code = args[1]
     if user_id in checkers and code in checkers[user_id]:
         checkers[user_id][code]["active"] = True
-        await message.reply_text(f"▶️ Akun Checker kode **{code}** aktif!")
+        await message.reply_text(f"▶️ Akun Checker kode **{code}** aktif kembali!")
     else:
         await message.reply_text(f"⚠️ Akun Checker kode **{code}** tidak ditemukan.")
 
@@ -275,7 +257,7 @@ async def check_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     active_checkers = [code for code, acc in checkers.get(user_id, {}).items() if acc["active"]]
     if not active_checkers:
-        await message.reply_text("⚠️ Tidak ada Akun Checker yang aktif!")
+        await message.reply_text("⚠️ Tidak ada Akun Checker yang aktif! Tambahkan beberapa akun via `/login 1`, `/login 2`, dst.")
         return
 
     user_states[user_id] = {"step": "SELECT_MODE"}
@@ -294,6 +276,9 @@ async def stop_cmd(client: Client, message: Message):
     else:
         await message.reply_text("⚠️ Tidak ada proses running.")
 
+# ----------------------------------------------------
+# Interactive Input Handler
+# ----------------------------------------------------
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "addcp", "check", "stop", "login", "keeper", "keep", "clear", "pause", "active"]))
 async def handle_inputs(client: Client, message: Message):
     user_id = message.from_user.id
