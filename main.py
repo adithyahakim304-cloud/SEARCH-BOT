@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, BotCommand
 from pyrogram.errors import (
     FloodWait,
     UsernameInvalid,
@@ -27,10 +27,28 @@ app = Client(
 )
 
 # In-memory Storage
-checkers = {}     # {user_id: [Client1, Client2, ...]}
-keepers = {}      # {user_id: Client_Keeper}
-wordings = {}     # {user_id: text}
-user_states = {}  # {user_id: {"step": ..., "data": ...}}
+checkers = {}     
+keepers = {}      
+wordings = {}     
+user_states = {}  
+
+# ----------------------------------------------------
+# 0. Setup Menu Perintah Kustom (Menu /)
+# ----------------------------------------------------
+async def set_default_commands():
+    commands = [
+        BotCommand("start", "Tampilkan menu utama dan bantuan"),
+        BotCommand("login", "Tambah akun checker (Contoh: /login 1)"),
+        BotCommand("keeper", "Tambah akun keeper khusus claim"),
+        BotCommand("pause", "Pause sementara akun checker (Contoh: /pause 1)"),
+        BotCommand("active", "Aktifkan kembali akun checker (Contoh: /active 1)"),
+        BotCommand("clear", "Logout/hapus akun checker (Contoh: /clear 1)"),
+        BotCommand("addcp", "Set wording jualan"),
+        BotCommand("check", "Mulai auto-sniper (Sekali / Loop)"),
+        BotCommand("keep", "Claim manual username via Keeper"),
+        BotCommand("stop", "Pause/hentikan proses checker")
+    ]
+    await app.set_bot_commands(commands)
 
 # ----------------------------------------------------
 # 1. Generator Variasi Username
@@ -106,11 +124,13 @@ async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "👋 **Welcome to Telegram Username Checker & Sniper Bot**\n\n"
         "Available Commands:\n"
-        "📱 `/login` - Add Checker Account\n"
-        "🛡 `/keeper` - Add Keeper Account (For Claiming)\n"
-        "📝 `/addcp [Text]` - Set Wording Jualan\n"
-        "🗑 `/clearnoktel` - Clear Phone Numbers\n"
-        "🚀 `/check` - Start Auto-Sniper (Once / Loop)\n"
+        "📱 `/login [kode]` - Tambah Akun Checker (Contoh: `/login 1`)\n"
+        "🛡 `/keeper` - Tambah Akun Keeper (Khusus Claim)\n"
+        "⏸ `/pause [kode]` - Pause sementara akun checker\n"
+        "▶️ `/active [kode]` - Aktifkan kembali akun checker\n"
+        "🗑 `/clear [kode]` - Logout akun checker tertentu\n"
+        "📝 `/addcp [Teks]` - Set Wording Jualan\n"
+        "🚀 `/check` - Start Auto-Sniper (Sekali / Loop)\n"
         "🎯 `/keep [usn]` - Manual Claim via Keeper\n"
         "🛑 `/stop` - Pause Checker"
     )
@@ -118,8 +138,14 @@ async def start_cmd(client: Client, message: Message):
 @app.on_message(filters.command("login") & filters.private)
 async def login_cmd(client: Client, message: Message):
     user_id = message.from_user.id
-    user_states[user_id] = {"step": "LOGIN_PHONE", "type": "checker"}
-    await message.reply_text("📱 **Tambah Akun Checker**\nSilakan kirimkan nomor telepon akun (Format: `+628xxx`):")
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ Format salah! Gunakan format: `/login [kode]`\nContoh: `/login 1`")
+        return
+
+    code = args[1]
+    user_states[user_id] = {"step": "LOGIN_PHONE", "type": "checker", "code": code}
+    await message.reply_text(f"📱 **Tambah Akun Checker (Kode: {code})**\nSilakan kirimkan nomor telepon akun (Format: `+628xxx`):")
 
 @app.on_message(filters.command("keeper") & filters.private)
 async def keeper_cmd(client: Client, message: Message):
@@ -127,20 +153,67 @@ async def keeper_cmd(client: Client, message: Message):
     user_states[user_id] = {"step": "LOGIN_PHONE", "type": "keeper"}
     await message.reply_text("🛡 **Tambah Akun Keeper**\nSilakan kirimkan nomor telepon akun Keeper (Format: `+628xxx`):")
 
+@app.on_message(filters.command("pause") & filters.private)
+async def pause_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ Format salah! Gunakan format: `/pause [kode]`")
+        return
+    code = args[1]
+    if user_id in checkers and code in checkers[user_id]:
+        checkers[user_id][code]["active"] = False
+        await message.reply_text(f"⏸ Akun Checker kode **{code}** berhasil di-pause!")
+    else:
+        await message.reply_text(f"⚠️ Akun Checker kode **{code}** tidak ditemukan.")
+
+@app.on_message(filters.command("active") & filters.private)
+async def active_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ Format salah! Gunakan format: `/active [kode]`")
+        return
+    code = args[1]
+    if user_id in checkers and code in checkers[user_id]:
+        checkers[user_id][code]["active"] = True
+        await message.reply_text(f"▶️ Akun Checker kode **{code}** berhasil diaktifkan kembali!")
+    else:
+        await message.reply_text(f"⚠️ Akun Checker kode **{code}** tidak ditemukan.")
+
+@app.on_message(filters.command("clear") & filters.private)
+async def clear_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply_text("❌ Format salah! Gunakan format: `/clear [kode]`")
+        return
+    code = args[1]
+    if user_id in checkers and code in checkers[user_id]:
+        acc = checkers[user_id].pop(code)
+        try:
+            await acc["client"].log_out()
+        except Exception:
+            pass
+        await message.reply_text(f"🗑 Akun Checker kode **{code}** berhasil di-logout dan dihapus!")
+    else:
+        await message.reply_text(f"⚠️ Akun Checker kode **{code}** tidak ditemukan.")
+
 @app.on_message(filters.command("addcp") & filters.private)
 async def addcp_cmd(client: Client, message: Message):
     text = message.text.split(" ", 1)
     if len(text) < 2:
-        await message.reply_text("❌ Usage: `/addcp [Your wording text]`")
+        await message.reply_text("❌ Format: `/addcp [Teks Wording]`")
         return
     wordings[message.from_user.id] = text[1]
-    await message.reply_text("✅ Wording jualan successfully saved!")
+    await message.reply_text("✅ Wording jualan berhasil disimpan!")
 
 @app.on_message(filters.command("check") & filters.private)
 async def check_cmd(client: Client, message: Message):
     user_id = message.from_user.id
-    if user_id not in checkers or not checkers[user_id]:
-        await message.reply_text("⚠️ Please login at least 1 Checker account first using `/login`!")
+    active_checkers = [code for code, acc in checkers.get(user_id, {}).items() if acc["active"]]
+    if not active_checkers:
+        await message.reply_text("⚠️ Tidak ada Akun Checker yang aktif! Tambahkan via `/login [kode]` atau aktifkan via `/active [kode]`.")
         return
 
     user_states[user_id] = {"step": "SELECT_MODE"}
@@ -156,14 +229,14 @@ async def stop_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in user_states:
         user_states[user_id]["active"] = False
-        await message.reply_text("🛑 Auto-sniper paused/stopped.")
+        await message.reply_text("🛑 Auto-sniper dihentikan.")
     else:
         await message.reply_text("⚠️ Tidak ada proses checker yang sedang berjalan.")
 
 # ----------------------------------------------------
 # 3. Interactive Login & Process Input Handler
 # ----------------------------------------------------
-@app.on_message(filters.text & filters.private & ~filters.command(["start", "addcp", "check", "stop", "login", "keeper", "keep", "clearnoktel"]))
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "addcp", "check", "stop", "login", "keeper", "keep", "clear", "pause", "active"]))
 async def handle_inputs(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id not in user_states:
@@ -172,13 +245,14 @@ async def handle_inputs(client: Client, message: Message):
     state_info = user_states[user_id]
     step = state_info.get("step")
 
-    # --- LOGIN STEP 1: PHONE NUMBER ---
+    # LOGIN STEP 1: PHONE NUMBER
     if step == "LOGIN_PHONE":
         phone = message.text.strip().replace(" ", "")
         user_type = state_info.get("type", "checker")
+        code = state_info.get("code", "1")
         
         user_client = Client(
-            f"user_{user_id}_{phone.replace('+', '')}",
+            f"user_{user_id}_{code}_{phone.replace('+', '')}",
             api_id=API_ID,
             api_hash=API_HASH,
             in_memory=True
@@ -192,7 +266,8 @@ async def handle_inputs(client: Client, message: Message):
                 "phone": phone,
                 "phone_code_hash": sent_code.phone_code_hash,
                 "client": user_client,
-                "type": user_type
+                "type": user_type,
+                "code": code
             }
             await message.reply_text("📩 Kode OTP telah dikirim ke Telegram kamu.\nKirimkan kode OTP ke sini (Contoh: `12345`):")
         except Exception as e:
@@ -200,44 +275,46 @@ async def handle_inputs(client: Client, message: Message):
             user_states.pop(user_id, None)
             await message.reply_text(f"❌ Gagal mengirim OTP: {e}")
 
-    # --- LOGIN STEP 2: OTP CODE ---
+    # LOGIN STEP 2: OTP CODE
     elif step == "LOGIN_OTP":
         otp = message.text.strip().replace(" ", "")
         user_client = state_info["client"]
         phone = state_info["phone"]
         phone_code_hash = state_info["phone_code_hash"]
         user_type = state_info["type"]
+        code = state_info.get("code")
 
         try:
             await user_client.sign_in(phone, phone_code_hash, otp)
-            await finalize_login(user_id, user_client, user_type, message)
+            await finalize_login(user_id, user_client, user_type, code, message)
         except SessionPasswordNeeded:
             user_states[user_id]["step"] = "LOGIN_2FA"
             await message.reply_text("🔐 Akun ini menggunakan Verifikasi 2-Langkah (2FA).\nSilakan kirimkan password 2FA kamu:")
         except PhoneCodeInvalid:
-            await message.reply_text("❌ Kode OTP salah! Silakan coba ketik ulang kode OTP:")
+            await message.reply_text("❌ Kode OTP salah! Silakan masukan kembali:")
         except Exception as e:
             await user_client.disconnect()
             user_states.pop(user_id, None)
             await message.reply_text(f"❌ Gagal login: {e}")
 
-    # --- LOGIN STEP 3: 2FA PASSWORD ---
+    # LOGIN STEP 3: 2FA PASSWORD
     elif step == "LOGIN_2FA":
         password = message.text.strip()
         user_client = state_info["client"]
         user_type = state_info["type"]
+        code = state_info.get("code")
 
         try:
             await user_client.check_password(password)
-            await finalize_login(user_id, user_client, user_type, message)
+            await finalize_login(user_id, user_client, user_type, code, message)
         except PasswordHashInvalid:
-            await message.reply_text("❌ Password 2FA salah! Silakan masukan password yang benar:")
+            await message.reply_text("❌ Password 2FA salah! Masukkan kembali:")
         except Exception as e:
             await user_client.disconnect()
             user_states.pop(user_id, None)
             await message.reply_text(f"❌ Gagal login: {e}")
 
-    # --- CHECKER STEP: MODE & TARGETS ---
+    # CHECKER STEP: MODE & TARGETS
     elif step == "SELECT_MODE":
         choice = message.text.strip()
         if choice in ["1", "2"]:
@@ -282,13 +359,13 @@ async def handle_inputs(client: Client, message: Message):
 
         asyncio.create_task(run_checker_loop(user_id, message, targets, mode))
 
-async def finalize_login(user_id: int, user_client: Client, user_type: str, message: Message):
+async def finalize_login(user_id: int, user_client: Client, user_type: str, code: str, message: Message):
     me = await user_client.get_me()
     if user_type == "checker":
         if user_id not in checkers:
-            checkers[user_id] = []
-        checkers[user_id].append(user_client)
-        await message.reply_text(f"✅ Berhasil menambah Akun Checker: **{me.first_name}** (`@{me.username}`)!")
+            checkers[user_id] = {}
+        checkers[user_id][code] = {"client": user_client, "active": True}
+        await message.reply_text(f"✅ Berhasil menambah Akun Checker kode **{code}**: **{me.first_name}** (`@{me.username}`)!")
     else:
         keepers[user_id] = user_client
         await message.reply_text(f"✅ Berhasil menambah Akun Keeper: **{me.first_name}** (`@{me.username}`)!")
@@ -296,21 +373,38 @@ async def finalize_login(user_id: int, user_client: Client, user_type: str, mess
     user_states.pop(user_id, None)
 
 # ----------------------------------------------------
-# 4. Main Checker & Sniper Worker Loop
+# 4. Fast Checker & Sniper Worker Loop
 # ----------------------------------------------------
 async def run_checker_loop(user_id: int, message: Message, targets: list, mode: str):
-    user_checkers = checkers.get(user_id, [])
     keeper_client = keepers.get(user_id)
     
-    checker_idx = 0
-    
     while user_states.get(user_id, {}).get("active", False):
+        active_list = [
+            (code, acc["client"]) 
+            for code, acc in checkers.get(user_id, {}).items() 
+            if acc["active"]
+        ]
+
+        if not active_list:
+            await message.reply_text("⚠️ Semua akun checker sedang tidak aktif atau kena limit.")
+            break
+
+        checker_idx = 0
+
         for usn in targets:
             if not user_states.get(user_id, {}).get("active", False):
                 break
 
-            current_checker = user_checkers[checker_idx]
-            checker_idx = (checker_idx + 1) % len(user_checkers)
+            active_list = [
+                (code, acc["client"]) 
+                for code, acc in checkers.get(user_id, {}).items() 
+                if acc["active"]
+            ]
+            if not active_list:
+                break
+
+            code, current_checker = active_list[checker_idx % len(active_list)]
+            checker_idx += 1
 
             try:
                 is_available = await current_checker.check_username(usn)
@@ -324,11 +418,12 @@ async def run_checker_loop(user_id: int, message: Message, targets: list, mode: 
                         except RPCError as claim_err:
                             await message.reply_text(f"⚠️ Gagal claim @{usn}: {claim_err}")
             except FloodWait as e:
-                await asyncio.sleep(e.value)
+                checkers[user_id][code]["active"] = False
+                await message.reply_text(f"⚠️ Akun Checker kode **{code}** kena limit Telegram! Istirahat **{e.value}** detik.")
             except Exception:
                 pass
 
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.5)
 
         if mode == "1":
             break
@@ -336,5 +431,12 @@ async def run_checker_loop(user_id: int, message: Message, targets: list, mode: 
     user_states.pop(user_id, None)
     await message.reply_text("🏁 **Pengecekan Selesai.**")
 
+async def main():
+    await app.start()
+    await set_default_commands()
+    print("🤖 Bot dinyalakan dan menu / berhasil diperbarui!")
+    await asyncio.Event().wait()
+
 if __name__ == "__main__":
-    app.run()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
