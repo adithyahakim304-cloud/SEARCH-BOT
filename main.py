@@ -42,7 +42,7 @@ async def set_default_commands():
         BotCommand("addcp", "Set wording jualan"),
         BotCommand("check", "Mulai auto-sniper"),
         BotCommand("keep", "Claim manual username"),
-        BotCommand("stop", "Hentikan proses checker")
+        BotCommand("stop", "Hentikan proses checker.")
     ]
     await app.set_bot_commands(commands)
 
