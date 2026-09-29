@@ -33,7 +33,7 @@ user_states = {}
 
 async def set_default_commands():
     commands = [
-        BotCommand("start", "Tampilkan menu utama"),
+        BotCommand("start", "Tampilkan menu utama."),
         BotCommand("login", "Tambah akun checker (/login 1)"),
         BotCommand("keeper", "Tambah akun keeper"),
         BotCommand("pause", "Pause akun checker (/pause 1)"),
